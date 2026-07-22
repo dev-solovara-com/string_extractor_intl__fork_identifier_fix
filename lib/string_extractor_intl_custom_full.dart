@@ -125,10 +125,24 @@ class LocalizationStringExtractor {
       }
 
       final fileName = path.basename(entity.path);
+      final lowerFileName = fileName.toLowerCase();
 
       // Generated source files should never be scanned for localization.
-      if (fileName.endsWith('.freezed.dart') ||
-          fileName.endsWith('.g.dart')) {
+      if (lowerFileName.endsWith('.freezed.dart') ||
+          lowerFileName.endsWith('.g.dart')) {
+        continue;
+      }
+
+      // Route definition files are entirely programmatic in this codebase.
+      // Ignore any filename ending in "_routes.dart", regardless of the
+      // naming convention or number of words before that suffix.
+      //
+      // Examples:
+      // app_routes.dart
+      // invoice_routes.dart
+      // user_account_routes.dart
+      // some-feature_routes.dart
+      if (lowerFileName.endsWith('_routes.dart')) {
         continue;
       }
 
