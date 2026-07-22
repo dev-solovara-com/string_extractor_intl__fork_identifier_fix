@@ -50,14 +50,12 @@ class LocalizationStringExtractor {
       outputDirectory,
      
       className,
-    ,
     ); // Use the provided className here
 
     if (replaceInFiles) {
       print(
         
         '🔄 Updated ${_processedFiles.length} files with localization calls',
-      ,
       );
 
       // Automatically run flutter gen-l10n after replacement
@@ -72,7 +70,6 @@ class LocalizationStringExtractor {
       throw Exception(
         
         'pubspec.yaml not found. Make sure you\'re in a Flutter project root.',
-      ,
       );
     }
 
@@ -89,7 +86,6 @@ class LocalizationStringExtractor {
       hasFlutterLocalizations = dependencies.containsKey(
         
         'flutter_localizations',
-      ,
       );
     }
 
@@ -122,7 +118,6 @@ class LocalizationStringExtractor {
     String className,
    
     bool replaceInFiles,
-  ,
   ) async {
     await for (final entity in dir.list(recursive: true)) {
       if (entity is File && entity.path.endsWith('.dart')) {
@@ -177,7 +172,6 @@ class LocalizationStringExtractor {
           hasVariables['variables'],
          
           context,
-        ,
         );
         replacement = methodCall;
         // Only add to _extractedStrings if it's a new unique key or needs updating with placeholders
