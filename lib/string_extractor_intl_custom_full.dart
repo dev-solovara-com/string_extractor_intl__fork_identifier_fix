@@ -773,6 +773,15 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
       return;
     }
 
+    // RegExp pattern strings are programmatic patterns, not user-facing text.
+    //
+    // Covers:
+    // RegExp('...')
+    // RegExp(r'...')
+    if (_isRegExpPattern(node)) {
+      return;
+    }
+
     final bool explicitlyIncluded =
         _hasDirectiveOnPreviousLine(node.offset, 'l10n-include-next-line');
 
@@ -899,6 +908,11 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
     }
 
     return false;
+  }
+
+  bool _isRegExpPattern(StringLiteral node) {
+    final invocation = _nearestInvocation(node);
+    return invocation != null && invocation.name == 'RegExp';
   }
 
   bool _isFlutterKeyString(StringLiteral node) {
