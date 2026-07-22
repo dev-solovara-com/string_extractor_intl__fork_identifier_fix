@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:path/path.dart' as path;
 import 'dart:math' as math;
 import 'package:yaml/yaml.dart';
+import 'package:analyzer/dart/analysis/utilities.dart';
+import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/visitor.dart';
 
 class LocalizationStringExtractor {
   // Map to store unique strings and their generated keys to prevent duplicates
@@ -249,93 +252,28 @@ class LocalizationStringExtractor {
     String content,
     String filePath,
   ) {
-    final List<Map<String, String>> strings = [];
-    final commentRanges = _buildCommentRanges(content);
+    final parseResult = parseString(
+      content: content,
+      path: filePath,
+      throwIfDiagnostics: false,
+    );
 
-    final stringPatterns = [
-      RegExp(r'"([^"\\]*(\\.[^"\\]*)*)"'), // Double quotes
-      RegExp(r"'([^'\\]*(\\.[^'\\]*)*)'"), // Single quotes
-    ];
+    final collector = _AstStringCollector(
+      content: content,
+      filePath: filePath,
+    );
 
-    for (final pattern in stringPatterns) {
-      final matches = pattern.allMatches(content);
+    parseResult.unit.accept(collector);
 
-      for (final match in matches) {
-        final fullMatch = match.group(0)!;
-        final innerString = match.group(1)!;
-
-        // Skip strings that appear inside Dart comments.
-        if (_isPositionInRanges(match.start, commentRanges)) {
-          continue;
-        }
-
-        // Allow an explicit opt-out for codebase-specific programmatic strings.
-        //
-        // Example:
-        // // l10n-ignore-next-line
-        // static const String routeName = 'internal_route_name';
-        if (_hasL10nIgnoreNextLineDirective(content, match.start)) {
-          continue;
-        }
-
-        // In *_routes.dart files, static String declarations are treated as
-        // programmatic route/path constants by default.
-        if (_isStaticStringInRoutesFile(content, match.start, filePath)) {
-          continue;
-        }
-
-        // Static String declarations are treated as programmatic constants by
-        // default. Use // l10n-include-next-line on the immediately preceding
-        // line to explicitly include a user-facing static String.
-        //
-        // Covers:
-        // static String ...
-        // static const String ...
-        // static final String ...
-        if (_isStaticStringDeclaration(content, match.start) &&
-            !_hasL10nIncludeNextLineDirective(content, match.start)) {
-          continue;
-        }
-
-        // Skip import/export/part URIs.
-        if (_isImportExportStatement(content, match.start)) {
-          continue;
-        }
-
-        // Skip MaterialApp/CupertinoApp title.
-        if (_isInMaterialAppTitle(content, match.start)) {
-          continue;
-        }
-
-        // Semantics.identifier is a stable programmatic identifier used for
-        // accessibility/testing and must not be localized.
-        if (_isSemanticsIdentifier(content, match.start)) {
-          continue;
-        }
-
-        // Custom semanticsId named arguments are also programmatic identifiers.
-        if (_isSemanticsIdArgument(content, match.start)) {
-          continue;
-        }
-
-        // Flutter Key values are programmatic identifiers and should not
-        // be extracted for localization.
-        if (_isFlutterKeyString(content, match.start)) {
-          continue;
-        }
-
-        // Get context (Text widget, etc.).
-        final context = _getStringContext(content, match.start);
-
-        strings.add({
-          'original': fullMatch,
-          'clean': innerString,
-          'context': context,
-        });
-      }
-    }
-
-    return strings;
+    return collector.candidates
+        .map(
+          (candidate) => {
+            'original': candidate.original,
+            'clean': candidate.clean,
+            'context': _getStringContext(content, candidate.offset),
+          },
+        )
+        .toList();
   }
 
   String _getStringContext(String content, int position) {
@@ -425,305 +363,6 @@ class LocalizationStringExtractor {
       };
     }
     return placeholders;
-  }
-
-  bool _isSemanticsIdentifier(String content, int position) {
-    // Look at the source immediately preceding the string literal.
-    //
-    // Example:
-    //
-    // Semantics(
-    //   identifier: 'dashboard_attention_title',
-    // )
-    //
-    // At `position`, the text immediately before the string should end with
-    // `identifier:`.
-
-    final int contextStart = math.max(0, position - 500);
-    final String precedingContent = content.substring(contextStart, position); 
-
-    // First verify that this string is the value of an `identifier:` argument.
-    final identifierPattern = RegExp(r'identifier\s*:\s*$', multiLine: true);
-
-    if (!identifierPattern.hasMatch(precedingContent)) {
-      return false;
-    }
-
-    // Narrow the exclusion specifically to Semantics(...) rather than ignoring
-    // every named parameter called `identifier`.
-    final int semanticsPosition = precedingContent.lastIndexOf('Semantics(');
-
-    if (semanticsPosition == -1) {
-      return false;
-    }
-
-    // Check whether the Semantics call appears to have already been closed
-    // before reaching this identifier.
-    //
-    // This is intentionally a lightweight check consistent with the extractor's
-    // existing regex/context-based implementation.
-    final String semanticsContext = precedingContent.substring(
-      semanticsPosition,
-    );
-
-    int openParens = 0;
-
-    for (final int char in semanticsContext.codeUnits) {
-      if (char == '('.codeUnitAt(0)) {
-        openParens++;
-      } else if (char == ')'.codeUnitAt(0)) {
-        openParens--;
-      }
-    }
-
-    return openParens > 0;
-  }
-
-  bool _isFlutterKeyString(String content, int position) {
-    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
-    final String linePrefix = content.substring(lineStart, position);
-
-    // Direct positional string arguments:
-    //
-    // Key('...')
-    // ValueKey('...')
-    // ValueKey<String>('...')
-    // PageStorageKey('...')
-    // ObjectKey('...')
-    // GlobalObjectKey('...')
-    //
-    // Only match when the constructor call occurs immediately before
-    // the string literal on the same line.
-    final directKeyPattern = RegExp(
-      r'(?:'
-      r'Key|'
-      r'ValueKey|'
-      r'PageStorageKey|'
-      r'ObjectKey|'
-      r'GlobalObjectKey'
-      r')'
-      r'(?:\s*<[^>]+>)?'
-      r'\s*\(\s*$',
-    );
-
-    if (directKeyPattern.hasMatch(linePrefix)) {
-      return true;
-    }
-
-    // GlobalKey(debugLabel: '...')
-    //
-    // debugLabel may be on its own line, so check whether the text
-    // immediately preceding the string is the debugLabel parameter.
-    final int contextStart = math.max(0, position - 100);
-    final String precedingContent = content.substring(contextStart, position);
-
-    final debugLabelPattern = RegExp(r'debugLabel\s*:\s*$', multiLine: true);
-
-    if (!debugLabelPattern.hasMatch(precedingContent)) {
-      return false;
-    }
-
-    // Make sure this debugLabel belongs to a GlobalKey constructor.
-    final int globalKeyPosition = precedingContent.lastIndexOf('GlobalKey');
-
-    return globalKeyPosition != -1;
-  }
-
-  bool _isSemanticsIdArgument(String content, int position) {
-    final int contextStart = math.max(0, position - 100);
-    final String precedingContent = content.substring(contextStart, position);
-
-    return RegExp(
-      r'\bsemanticsId\s*:\s*$',
-      multiLine: true,
-    ).hasMatch(precedingContent);
-  }
-
-  bool _isStaticStringDeclaration(String content, int position) {
-    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
-    final String linePrefix = content.substring(lineStart, position);
-
-    return RegExp(
-      r'\bstatic\s+(?:(?:const|final)\s+)?String\b[^=]*=\s*$',
-    ).hasMatch(linePrefix);
-  }
-
-  bool _isStaticStringInRoutesFile(
-    String content,
-    int position,
-    String filePath,
-  ) {
-    final String fileName = path.basename(filePath).toLowerCase();
-
-    if (!fileName.endsWith('_routes.dart')) {
-      return false;
-    }
-
-    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
-    final String linePrefix = content.substring(lineStart, position);
-
-    // Covers:
-    // static String foo = '...';
-    // static const String foo = '...';
-    // static final String foo = '...';
-    return RegExp(
-      r'\bstatic\s+(?:(?:const|final)\s+)?String\b[^=]*=\s*$',
-    ).hasMatch(linePrefix);
-  }
-
-  bool _hasL10nIncludeNextLineDirective(String content, int position) {
-    return _previousLineHasDirective(
-      content,
-      position,
-      'l10n-include-next-line',
-    );
-  }
-
-  bool _hasL10nIgnoreNextLineDirective(String content, int position) {
-    return _previousLineHasDirective(
-      content,
-      position,
-      'l10n-ignore-next-line',
-    );
-  }
-
-  bool _previousLineHasDirective(
-    String content,
-    int position,
-    String directive,
-  ) {
-    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
-
-    if (lineStart <= 0) {
-      return false;
-    }
-
-    final int previousLineEnd = lineStart - 1;
-    final int previousLineStart =
-        content.lastIndexOf('\n', previousLineEnd - 1) + 1;
-
-    final String previousLine =
-        content.substring(previousLineStart, previousLineEnd).trim();
-
-    return previousLine.contains(directive);
-  }
-
-  List<_SourceRange> _buildCommentRanges(String content) {
-    final List<_SourceRange> ranges = [];
-    int i = 0;
-
-    while (i < content.length) {
-      // Line comment.
-      if (i + 1 < content.length &&
-          content.codeUnitAt(i) == 47 &&
-          content.codeUnitAt(i + 1) == 47) {
-        final int start = i;
-        i += 2;
-
-        while (i < content.length && content.codeUnitAt(i) != 10) {
-          i++;
-        }
-
-        ranges.add(_SourceRange(start, i));
-        continue;
-      }
-
-      // Block comment. Dart supports nested block comments, so track depth.
-      if (i + 1 < content.length &&
-          content.codeUnitAt(i) == 47 &&
-          content.codeUnitAt(i + 1) == 42) {
-        final int start = i;
-        int depth = 1;
-        i += 2;
-
-        while (i < content.length && depth > 0) {
-          if (i + 1 < content.length &&
-              content.codeUnitAt(i) == 47 &&
-              content.codeUnitAt(i + 1) == 42) {
-            depth++;
-            i += 2;
-            continue;
-          }
-
-          if (i + 1 < content.length &&
-              content.codeUnitAt(i) == 42 &&
-              content.codeUnitAt(i + 1) == 47) {
-            depth--;
-            i += 2;
-            continue;
-          }
-
-          i++;
-        }
-
-        ranges.add(_SourceRange(start, i));
-        continue;
-      }
-
-      // Skip over quoted strings so // or /* inside a string is not treated
-      // as a comment marker.
-      final int current = content.codeUnitAt(i);
-      if (current == 39 || current == 34) {
-        final int quote = current;
-        final bool isTriple =
-            i + 2 < content.length &&
-            content.codeUnitAt(i + 1) == quote &&
-            content.codeUnitAt(i + 2) == quote;
-
-        if (isTriple) {
-          i += 3;
-
-          while (i + 2 < content.length) {
-            if (content.codeUnitAt(i) == quote &&
-                content.codeUnitAt(i + 1) == quote &&
-                content.codeUnitAt(i + 2) == quote) {
-              i += 3;
-              break;
-            }
-
-            if (content.codeUnitAt(i) == 92) {
-              i += 2;
-            } else {
-              i++;
-            }
-          }
-
-          continue;
-        }
-
-        i++;
-
-        while (i < content.length) {
-          if (content.codeUnitAt(i) == 92) {
-            i += 2;
-            continue;
-          }
-
-          if (i < content.length && content.codeUnitAt(i) == quote) {
-            i++;
-            break;
-          }
-
-          i++;
-        }
-
-        continue;
-      }
-
-      i++;
-    }
-
-    return ranges;
-  }
-
-  bool _isPositionInRanges(int position, List<_SourceRange> ranges) {
-    for (final range in ranges) {
-      if (position >= range.start && position < range.end) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   bool _isImportExportStatement(String content, int position) {
@@ -1010,10 +649,282 @@ synthetic-package: false
   }
 }
 
+class _AstStringCandidate {
+  final String original;
+  final String clean;
+  final int offset;
 
-class _SourceRange {
-  final int start;
-  final int end;
-
-  const _SourceRange(this.start, this.end);
+  const _AstStringCandidate({
+    required this.original,
+    required this.clean,
+    required this.offset,
+  });
 }
+
+class _AstStringCollector extends RecursiveAstVisitor<void> {
+  final String content;
+  final String filePath;
+  final List<_AstStringCandidate> candidates = [];
+
+  static const Set<String> _directFlutterKeyTypes = {
+    'Key',
+    'ValueKey',
+    'PageStorageKey',
+    'ObjectKey',
+    'GlobalObjectKey',
+  };
+
+  _AstStringCollector({
+    required this.content,
+    required this.filePath,
+  });
+
+  @override
+  void visitSimpleStringLiteral(SimpleStringLiteral node) {
+    _considerStringLiteral(node, node.value);
+    super.visitSimpleStringLiteral(node);
+  }
+
+  @override
+  void visitStringInterpolation(StringInterpolation node) {
+    _considerStringLiteral(
+      node,
+      _stripStringDelimiters(node.toSource()),
+    );
+    super.visitStringInterpolation(node);
+  }
+
+  void _considerStringLiteral(
+    StringLiteral node,
+    String cleanValue,
+  ) {
+    if (_hasDirectiveOnPreviousLine(node.offset, 'l10n-ignore-next-line')) {
+      return;
+    }
+
+    // URI strings in import/export/part directives are never localizable.
+    if (_hasAncestor<UriBasedDirective>(node)) {
+      return;
+    }
+
+    // Ignore MaterialApp/CupertinoApp title values.
+    if (_isNamedArgument(node, 'title')) {
+      final creation = _nearestAncestor<InstanceCreationExpression>(node);
+      final typeName = creation == null ? null : _constructorTypeName(creation);
+      if (typeName == 'MaterialApp' || typeName == 'CupertinoApp') {
+        return;
+      }
+    }
+
+    // Ignore Semantics(identifier: '...').
+    if (_isNamedArgument(node, 'identifier')) {
+      final creation = _nearestAncestor<InstanceCreationExpression>(node);
+      if (creation != null && _constructorTypeName(creation) == 'Semantics') {
+        return;
+      }
+    }
+
+    // Ignore custom semanticsId: '...'.
+    if (_isNamedArgument(node, 'semanticsId')) {
+      return;
+    }
+
+    // Ignore Flutter Key constructor strings.
+    if (_isFlutterKeyString(node)) {
+      return;
+    }
+
+    final bool explicitlyIncluded =
+        _hasDirectiveOnPreviousLine(node.offset, 'l10n-include-next-line');
+
+    // Static String fields are programmatic by default.
+    if (_isStaticStringFieldInitializer(node) && !explicitlyIncluded) {
+      return;
+    }
+
+    // Extra safety for route files: ignore static field initializer strings
+    // in any file named *_routes.dart, even if the String type is inferred.
+    if (_isRoutesFile() &&
+        _isStaticFieldInitializer(node) &&
+        !explicitlyIncluded) {
+      return;
+    }
+
+    candidates.add(
+      _AstStringCandidate(
+        original: node.toSource(),
+        clean: cleanValue,
+        offset: node.offset,
+      ),
+    );
+  }
+
+  bool _isFlutterKeyString(StringLiteral node) {
+    final creation = _nearestAncestor<InstanceCreationExpression>(node);
+    if (creation == null) {
+      return false;
+    }
+
+    final typeName = _constructorTypeName(creation);
+
+    if (_directFlutterKeyTypes.contains(typeName)) {
+      return true;
+    }
+
+    if (typeName == 'GlobalKey' && _isNamedArgument(node, 'debugLabel')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  bool _isStaticStringFieldInitializer(StringLiteral node) {
+    final variable = _nearestAncestor<VariableDeclaration>(node);
+    if (variable == null || variable.initializer == null) {
+      return false;
+    }
+
+    if (!_isDescendantOf(node, variable.initializer!)) {
+      return false;
+    }
+
+    final variableList = variable.parent;
+    if (variableList is! VariableDeclarationList) {
+      return false;
+    }
+
+    final field = variableList.parent;
+    if (field is! FieldDeclaration) {
+      return false;
+    }
+
+    if (!field.isStatic) {
+      return false;
+    }
+
+    final typeSource = variableList.type?.toSource();
+    return typeSource == 'String' || typeSource == 'String?';
+  }
+
+  bool _isStaticFieldInitializer(StringLiteral node) {
+    final variable = _nearestAncestor<VariableDeclaration>(node);
+    if (variable == null || variable.initializer == null) {
+      return false;
+    }
+
+    if (!_isDescendantOf(node, variable.initializer!)) {
+      return false;
+    }
+
+    final variableList = variable.parent;
+    if (variableList is! VariableDeclarationList) {
+      return false;
+    }
+
+    final field = variableList.parent;
+    return field is FieldDeclaration && field.isStatic;
+  }
+
+  bool _isNamedArgument(AstNode node, String name) {
+    AstNode? current = node.parent;
+
+    while (current != null) {
+      if (current is NamedExpression) {
+        return current.name.label.name == name;
+      }
+
+      if (current is ArgumentList ||
+          current is InstanceCreationExpression ||
+          current is MethodInvocation ||
+          current is FunctionExpressionInvocation) {
+        break;
+      }
+
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  String _constructorTypeName(InstanceCreationExpression creation) {
+    final source = creation.constructorName.type.toSource();
+    final genericIndex = source.indexOf('<');
+    if (genericIndex == -1) {
+      return source;
+    }
+    return source.substring(0, genericIndex);
+  }
+
+  bool _isRoutesFile() {
+    final fileName = path.basename(filePath).toLowerCase();
+    return fileName.endsWith('_routes.dart');
+  }
+
+  bool _hasDirectiveOnPreviousLine(int position, String directive) {
+    final lineStart = content.lastIndexOf('\n', position - 1) + 1;
+    if (lineStart <= 0) {
+      return false;
+    }
+
+    final previousLineEnd = lineStart - 1;
+    final previousLineStart =
+        content.lastIndexOf('\n', previousLineEnd - 1) + 1;
+
+    final previousLine =
+        content.substring(previousLineStart, previousLineEnd).trim();
+
+    return previousLine.contains(directive);
+  }
+
+  T? _nearestAncestor<T extends AstNode>(AstNode node) {
+    AstNode? current = node.parent;
+
+    while (current != null) {
+      if (current is T) {
+        return current;
+      }
+      current = current.parent;
+    }
+
+    return null;
+  }
+
+  bool _hasAncestor<T extends AstNode>(AstNode node) {
+    return _nearestAncestor<T>(node) != null;
+  }
+
+  bool _isDescendantOf(AstNode node, AstNode ancestor) {
+    AstNode? current = node;
+
+    while (current != null) {
+      if (identical(current, ancestor)) {
+        return true;
+      }
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  String _stripStringDelimiters(String source) {
+    String value = source;
+
+    if ((value.startsWith('r') || value.startsWith('R')) &&
+        value.length > 1) {
+      value = value.substring(1);
+    }
+
+    if ((value.startsWith(") && value.endsWith(")) ||
+        (value.startsWith('"""') && value.endsWith('"""'))) {
+      return value.substring(3, value.length - 3);
+    }
+
+    if ((value.startsWith("'") && value.endsWith("'")) ||
+        (value.startsWith('"') && value.endsWith('"'))) {
+      return value.substring(1, value.length - 1);
+    }
+
+    return value;
+  }
+}
+
