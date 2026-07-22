@@ -19,6 +19,7 @@ class LocalizationStringExtractor {
     required String outputDirectory,
     required String templateArbFile,
     required String
+   
     className, // This will now be used to configure the output class in l10n.yaml
     bool replaceInFiles = false,
     bool checkDependencies = true,
@@ -45,13 +46,18 @@ class LocalizationStringExtractor {
     print('📝 Found ${_extractedStrings.length} unique localizable strings');
     await _generateArbFile(outputDirectory, templateArbFile);
     await _generateL10nYaml(
+      
       outputDirectory,
+     
       className,
+    ,
     ); // Use the provided className here
 
     if (replaceInFiles) {
       print(
+        
         '🔄 Updated ${_processedFiles.length} files with localization calls',
+      ,
       );
 
       // Automatically run flutter gen-l10n after replacement
@@ -64,7 +70,9 @@ class LocalizationStringExtractor {
     final pubspecFile = File('pubspec.yaml');
     if (!pubspecFile.existsSync()) {
       throw Exception(
+        
         'pubspec.yaml not found. Make sure you\'re in a Flutter project root.',
+      ,
       );
     }
 
@@ -79,7 +87,9 @@ class LocalizationStringExtractor {
     if (dependencies != null) {
       hasIntl = dependencies.containsKey('intl');
       hasFlutterLocalizations = dependencies.containsKey(
+        
         'flutter_localizations',
+      ,
       );
     }
 
@@ -106,9 +116,13 @@ class LocalizationStringExtractor {
   }
 
   Future<void> _scanDirectory(
+    
     Directory dir,
+   
     String className,
+   
     bool replaceInFiles,
+  ,
   ) async {
     await for (final entity in dir.list(recursive: true)) {
       if (entity is File && entity.path.endsWith('.dart')) {
@@ -155,15 +169,22 @@ class LocalizationStringExtractor {
       String replacement;
       if (hasVariables['hasVars']) {
         final methodCall = _generateMethodCall(
+          
           className,
+         
           keyName,
+         
           hasVariables['variables'],
+         
           context,
+        ,
         );
         replacement = methodCall;
         // Only add to _extractedStrings if it's a new unique key or needs updating with placeholders
         if (!_extractedStrings.containsKey(keyName) ||
+           
             (_extractedStrings[keyName]?['placeholders'] == null &&
+               
                 hasVariables['variables'].isNotEmpty)) {
           _extractedStrings[keyName] = {
             'value': hasVariables['template'],
@@ -210,6 +231,7 @@ class LocalizationStringExtractor {
 
     // Check if we're within a MaterialApp context and specifically in title property
     if (contextStr.contains('MaterialApp(') ||
+       
         contextStr.contains('CupertinoApp(')) {
       // Look for title: pattern before our string
       final titlePattern = RegExp(r'title\s*:\s*$');
@@ -233,6 +255,7 @@ class LocalizationStringExtractor {
     for (final pattern in stringPatterns) {
       final matches = pattern.allMatches(content);
 
+
       for (final match in matches) {
         final fullMatch = match.group(0)!;
         final innerString = match.group(1)!;
@@ -252,8 +275,13 @@ class LocalizationStringExtractor {
         if (_isSemanticsIdentifier(content, match.start)) {
           continue;
         }
+        // Flutter Key values are programmatic identifiers and should not
+        // be extracted for localization.
+        if (_isFlutterKeyString(content, match.start)) {
+          continue;
+        }
 
-        // Get context (Text widget, etc.).
+        // Get context (Text widget, etc.)..
         final context = _getStringContext(content, match.start);
 
         strings.add({
@@ -345,8 +373,11 @@ class LocalizationStringExtractor {
       placeholders[variable] = {
         'type': 'String',
         'example':
+           
             variable == 'username'
+               
                 ? 'John'
+               
                 : variable, // Use variable name as example
       };
     }
@@ -366,7 +397,7 @@ class LocalizationStringExtractor {
     // `identifier:`.
 
     final int contextStart = math.max(0, position - 500);
-    final String precedingContent = content.substring(contextStart, position);
+    final String precedingContent = content.substring(contextStart, position); 
 
     // First verify that this string is the value of an `identifier:` argument.
     final identifierPattern = RegExp(r'identifier\s*:\s*$', multiLine: true);
@@ -403,6 +434,56 @@ class LocalizationStringExtractor {
     }
 
     return openParens > 0;
+  }
+
+  bool _isFlutterKeyString(String content, int position) {
+    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
+    final String linePrefix = content.substring(lineStart, position);
+
+    // Direct positional string arguments:
+    //
+    // Key('...')
+    // ValueKey('...')
+    // ValueKey<String>('...')
+    // PageStorageKey('...')
+    // ObjectKey('...')
+    // GlobalObjectKey('...')
+    //
+    // Only match when the constructor call occurs immediately before
+    // the string literal on the same line.
+    final directKeyPattern = RegExp(
+      r'(?:'
+      r'Key|'
+      r'ValueKey|'
+      r'PageStorageKey|'
+      r'ObjectKey|'
+      r'GlobalObjectKey'
+      r')'
+      r'(?:\s*<[^>]+>)?'
+      r'\s*\(\s*$',
+    );
+
+    if (directKeyPattern.hasMatch(linePrefix)) {
+      return true;
+    }
+
+    // GlobalKey(debugLabel: '...')
+    //
+    // debugLabel may be on its own line, so check whether the text
+    // immediately preceding the string is the debugLabel parameter.
+    final int contextStart = math.max(0, position - 100);
+    final String precedingContent = content.substring(contextStart, position);
+
+    final debugLabelPattern = RegExp(r'debugLabel\s*:\s*$', multiLine: true);
+
+    if (!debugLabelPattern.hasMatch(precedingContent)) {
+      return false;
+    }
+
+    // Make sure this debugLabel belongs to a GlobalKey constructor.
+    final int globalKeyPosition = precedingContent.lastIndexOf('GlobalKey');
+
+    return globalKeyPosition != -1;
   }
 
   bool _isImportExportStatement(String content, int position) {
