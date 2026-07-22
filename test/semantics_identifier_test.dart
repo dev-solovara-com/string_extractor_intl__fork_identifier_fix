@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:string_extractor_intl/string_extractor_intl.dart';
+import 'package:string_extractor_intl/string_extractor_intl_custom_full.dart';
 import 'package:test/test.dart';
 
 void main() {
