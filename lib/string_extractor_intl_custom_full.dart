@@ -661,6 +661,16 @@ class _AstStringCandidate {
   });
 }
 
+class _InvocationInfo {
+  final String name;
+  final AstNode node;
+
+  const _InvocationInfo({
+    required this.name,
+    required this.node,
+  });
+}
+
 class _AstStringCollector extends RecursiveAstVisitor<void> {
   final String content;
   final String filePath;
@@ -709,8 +719,8 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
 
     // Ignore MaterialApp/CupertinoApp title values.
     if (_isNamedArgument(node, 'title')) {
-      final creation = _nearestAncestor<InstanceCreationExpression>(node);
-      final typeName = creation == null ? null : _constructorTypeName(creation);
+      final invocation = _nearestInvocation(node);
+      final typeName = invocation?.name;
       if (typeName == 'MaterialApp' || typeName == 'CupertinoApp') {
         return;
       }
@@ -718,8 +728,8 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
 
     // Ignore Semantics(identifier: '...').
     if (_isNamedArgument(node, 'identifier')) {
-      final creation = _nearestAncestor<InstanceCreationExpression>(node);
-      if (creation != null && _constructorTypeName(creation) == 'Semantics') {
+      final invocation = _nearestInvocation(node);
+      if (invocation != null && invocation.name == 'Semantics') {
         return;
       }
     }
@@ -760,22 +770,53 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
   }
 
   bool _isFlutterKeyString(StringLiteral node) {
-    final creation = _nearestAncestor<InstanceCreationExpression>(node);
-    if (creation == null) {
+    final invocation = _nearestInvocation(node);
+    if (invocation == null) {
       return false;
     }
 
-    final typeName = _constructorTypeName(creation);
+    final name = invocation.name;
 
-    if (_directFlutterKeyTypes.contains(typeName)) {
+    if (_directFlutterKeyTypes.contains(name)) {
       return true;
     }
 
-    if (typeName == 'GlobalKey' && _isNamedArgument(node, 'debugLabel')) {
+    if (name == 'GlobalKey' && _isNamedArgument(node, 'debugLabel')) {
       return true;
     }
 
     return false;
+  }
+
+  _InvocationInfo? _nearestInvocation(AstNode node) {
+    AstNode? current = node.parent;
+
+    while (current != null) {
+      if (current is InstanceCreationExpression) {
+        return _InvocationInfo(
+          name: _constructorTypeName(current),
+          node: current,
+        );
+      }
+
+      if (current is MethodInvocation) {
+        return _InvocationInfo(
+          name: current.methodName.name,
+          node: current,
+        );
+      }
+
+      if (current is FunctionExpressionInvocation) {
+        return _InvocationInfo(
+          name: current.function.toSource(),
+          node: current,
+        );
+      }
+
+      current = current.parent;
+    }
+
+    return null;
   }
 
   bool _isStaticStringFieldInitializer(StringLiteral node) {
