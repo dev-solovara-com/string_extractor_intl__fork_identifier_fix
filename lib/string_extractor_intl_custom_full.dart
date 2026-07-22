@@ -717,6 +717,35 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
       return;
     }
 
+    // Map literal keys are programmatic/property names, not user-facing text.
+    //
+    // Example:
+    // {
+    //   'display_name': displayName,
+    //   'full_name': displayName,
+    // }
+    if (_isMapLiteralKey(node)) {
+      return;
+    }
+
+    // Enum-to-string switch mappings are commonly used as serialization or
+    // control/property identifiers. Ignore the result when the string exactly
+    // matches the enum member name.
+    //
+    // Example:
+    // PackageFormControlConstants.effortLevels => 'effortLevels'
+    if (_isEnumMemberMirrorSwitchResult(node, cleanValue)) {
+      return;
+    }
+
+    // In this codebase, user-facing literals are not expected to be bare
+    // camelCase or snake_case identifiers. Dynamic/interpolated strings are
+    // intentionally excluded from this heuristic.
+    if (node is SimpleStringLiteral &&
+        _looksLikeProgrammaticIdentifier(cleanValue)) {
+      return;
+    }
+
     // Ignore MaterialApp/CupertinoApp title values.
     if (_isNamedArgument(node, 'title')) {
       final invocation = _nearestInvocation(node);
@@ -767,6 +796,109 @@ class _AstStringCollector extends RecursiveAstVisitor<void> {
         offset: node.offset,
       ),
     );
+  }
+
+  bool _isMapLiteralKey(StringLiteral node) {
+    AstNode? current = node.parent;
+
+    while (current != null) {
+      if (current is MapLiteralEntry) {
+        return identical(current.key, node) ||
+            _isDescendantOf(node, current.key);
+      }
+
+      if (current is SetOrMapLiteral ||
+          current is ArgumentList ||
+          current is Statement) {
+        break;
+      }
+
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  bool _isEnumMemberMirrorSwitchResult(
+    StringLiteral node,
+    String cleanValue,
+  ) {
+    AstNode? current = node.parent;
+
+    while (current != null) {
+      final source = current.toSource();
+
+      // Analyzer AST node names have changed across versions. Rather than
+      // depending on one concrete switch-case node class, inspect the smallest
+      // enclosing switch-expression arm source and require:
+      //
+      //   Something.member => 'member'
+      //
+      // The AST still determines the actual string literal; this source check
+      // is only policy matching inside that real AST context.
+      if (source.contains('=>') && source.contains(node.toSource())) {
+        final arrowIndex = source.indexOf('=>');
+        final left = source.substring(0, arrowIndex).trim();
+
+        final memberMatch = RegExp(
+          r'([A-Za-z_][A-Za-z0-9_]*)\s*$',
+        ).firstMatch(left);
+
+        if (memberMatch != null &&
+            memberMatch.group(1) == cleanValue) {
+          // Require enum/member-like qualification on the left side so a plain
+          // variable switch arm does not get treated as an enum mapping.
+          if (left.contains('.')) {
+            return true;
+          }
+        }
+      }
+
+      if (current is SwitchExpression ||
+          current is SwitchStatement ||
+          current is Statement) {
+        break;
+      }
+
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  bool _looksLikeProgrammaticIdentifier(String value) {
+    if (value.isEmpty) {
+      return false;
+    }
+
+    // Whitespace strongly suggests natural/user-facing text.
+    if (RegExp(r'\s').hasMatch(value)) {
+      return false;
+    }
+
+    // Preserve strings that contain interpolation markers/placeholders.
+    if (value.contains(r'$') ||
+        value.contains('{') ||
+        value.contains('}')) {
+      return false;
+    }
+
+    // snake_case
+    if (RegExp(r'^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$').hasMatch(value)) {
+      return true;
+    }
+
+    // SCREAMING_SNAKE_CASE
+    if (RegExp(r'^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$').hasMatch(value)) {
+      return true;
+    }
+
+    // lowerCamelCase, requiring at least one lower-to-upper transition.
+    if (RegExp(r'^[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*$').hasMatch(value)) {
+      return true;
+    }
+
+    return false;
   }
 
   bool _isFlutterKeyString(StringLiteral node) {
