@@ -112,17 +112,24 @@ class LocalizationStringExtractor {
   }
 
   Future<void> _scanDirectory(
-    
     Directory dir,
-   
     String className,
-   
     bool replaceInFiles,
   ) async {
     await for (final entity in dir.list(recursive: true)) {
-      if (entity is File && entity.path.endsWith('.dart')) {
-        await _processFile(entity, className, replaceInFiles);
+      if (entity is! File || !entity.path.endsWith('.dart')) {
+        continue;
       }
+
+      final fileName = path.basename(entity.path);
+
+      // Generated source files should never be scanned for localization.
+      if (fileName.endsWith('.freezed.dart') ||
+          fileName.endsWith('.g.dart')) {
+        continue;
+      }
+
+      await _processFile(entity, className, replaceInFiles);
     }
   }
 
@@ -277,11 +284,15 @@ class LocalizationStringExtractor {
           continue;
         }
 
-        // Outside route files, static const String declarations are treated as
-        // programmatic constants by default. Use // l10n-include-next-line on
-        // the immediately preceding line to explicitly include a user-facing
-        // static const String.
-        if (_isStaticConstString(content, match.start) &&
+        // Static String declarations are treated as programmatic constants by
+        // default. Use // l10n-include-next-line on the immediately preceding
+        // line to explicitly include a user-facing static String.
+        //
+        // Covers:
+        // static String ...
+        // static const String ...
+        // static final String ...
+        if (_isStaticStringDeclaration(content, match.start) &&
             !_hasL10nIncludeNextLineDirective(content, match.start)) {
           continue;
         }
@@ -528,12 +539,12 @@ class LocalizationStringExtractor {
     ).hasMatch(precedingContent);
   }
 
-  bool _isStaticConstString(String content, int position) {
+  bool _isStaticStringDeclaration(String content, int position) {
     final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
     final String linePrefix = content.substring(lineStart, position);
 
     return RegExp(
-      r'\bstatic\s+const\s+String\b[^=]*=\s*$',
+      r'\bstatic\s+(?:(?:const|final)\s+)?String\b[^=]*=\s*$',
     ).hasMatch(linePrefix);
   }
 
