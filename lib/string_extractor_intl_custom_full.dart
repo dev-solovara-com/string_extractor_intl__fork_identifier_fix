@@ -132,7 +132,7 @@ class LocalizationStringExtractor {
     bool replaceInFiles,
   ) async {
     final content = await file.readAsString();
-    final strings = _extractStringsFromContent(content);
+    final strings = _extractStringsFromContent(content, file.path);
 
     if (strings.isEmpty) return;
 
@@ -238,7 +238,10 @@ class LocalizationStringExtractor {
     return false;
   }
 
-  List<Map<String, String>> _extractStringsFromContent(String content) {
+  List<Map<String, String>> _extractStringsFromContent(
+    String content,
+    String filePath,
+  ) {
     final List<Map<String, String>> strings = [];
     final commentRanges = _buildCommentRanges(content);
 
@@ -265,6 +268,21 @@ class LocalizationStringExtractor {
         // // l10n-ignore-next-line
         // static const String routeName = 'internal_route_name';
         if (_hasL10nIgnoreNextLineDirective(content, match.start)) {
+          continue;
+        }
+
+        // In *_routes.dart files, static String declarations are treated as
+        // programmatic route/path constants by default.
+        if (_isStaticStringInRoutesFile(content, match.start, filePath)) {
+          continue;
+        }
+
+        // Outside route files, static const String declarations are treated as
+        // programmatic constants by default. Use // l10n-include-next-line on
+        // the immediately preceding line to explicitly include a user-facing
+        // static const String.
+        if (_isStaticConstString(content, match.start) &&
+            !_hasL10nIncludeNextLineDirective(content, match.start)) {
           continue;
         }
 
@@ -510,7 +528,59 @@ class LocalizationStringExtractor {
     ).hasMatch(precedingContent);
   }
 
+  bool _isStaticConstString(String content, int position) {
+    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
+    final String linePrefix = content.substring(lineStart, position);
+
+    return RegExp(
+      r'\bstatic\s+const\s+String\b[^=]*=\s*$',
+    ).hasMatch(linePrefix);
+  }
+
+  bool _isStaticStringInRoutesFile(
+    String content,
+    int position,
+    String filePath,
+  ) {
+    final String fileName = path.basename(filePath).toLowerCase();
+
+    if (!fileName.endsWith('_routes.dart')) {
+      return false;
+    }
+
+    final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
+    final String linePrefix = content.substring(lineStart, position);
+
+    // Covers:
+    // static String foo = '...';
+    // static const String foo = '...';
+    // static final String foo = '...';
+    return RegExp(
+      r'\bstatic\s+(?:(?:const|final)\s+)?String\b[^=]*=\s*$',
+    ).hasMatch(linePrefix);
+  }
+
+  bool _hasL10nIncludeNextLineDirective(String content, int position) {
+    return _previousLineHasDirective(
+      content,
+      position,
+      'l10n-include-next-line',
+    );
+  }
+
   bool _hasL10nIgnoreNextLineDirective(String content, int position) {
+    return _previousLineHasDirective(
+      content,
+      position,
+      'l10n-ignore-next-line',
+    );
+  }
+
+  bool _previousLineHasDirective(
+    String content,
+    int position,
+    String directive,
+  ) {
     final int lineStart = content.lastIndexOf('\n', position - 1) + 1;
 
     if (lineStart <= 0) {
@@ -524,7 +594,7 @@ class LocalizationStringExtractor {
     final String previousLine =
         content.substring(previousLineStart, previousLineEnd).trim();
 
-    return previousLine.contains('l10n-ignore-next-line');
+    return previousLine.contains(directive);
   }
 
   List<_SourceRange> _buildCommentRanges(String content) {

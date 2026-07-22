@@ -26,12 +26,15 @@ void main() {
       }
     });
 
-    Future<Map<String, dynamic>> extractFromSource(String source) async {
+    Future<Map<String, dynamic>> extractFromSource(
+      String source, {
+      String fileName = 'main.dart',
+    }) async {
       final inputDir = Directory('${tempDir.path}/lib')
         ..createSync(recursive: true);
       final outputDir = '${tempDir.path}/lib/l10n';
 
-      final sourceFile = File('${inputDir.path}/main.dart');
+      final sourceFile = File('${inputDir.path}/$fileName');
       await sourceFile.writeAsString(source);
 
       final extractor = LocalizationStringExtractor();
@@ -293,84 +296,227 @@ void buildExample() {
       expect(values, contains('VISIBLE AFTER COMMENT MARKERS'));
     });
 
-    test(
-      'supports l10n-ignore-next-line for custom programmatic strings',
-      () async {
-        final arbData = await extractFromSource(r'''
+    test('supports l10n-ignore-next-line for custom programmatic strings',
+        () async {
+      final arbData = await extractFromSource(r'''
 import 'package:flutter/material.dart';
 
 // l10n-ignore-next-line
-static const String calendarEventUiObj = 'calendarEventUiObj';
+final String runtimeInternalKey = 'runtimeInternalKey';
 
 // l10n-ignore-next-line
-static const String invoiceUiObj = "invoiceUiObj";
-
-// l10n-ignore-next-line
-static String pathBizProfileView =
-    '${EnumUserAppRoutes.settings}/businessProfileView';
+String anotherInternalValue = "anotherInternalValue";
 
 void buildExample() {
   const Text('VISIBLE TEXT');
 }
 ''');
 
-        final values = extractedValues(arbData);
+      final values = extractedValues(arbData);
 
-        expect(values, contains('VISIBLE TEXT'));
-        expect(values, isNot(contains('calendarEventUiObj')));
-        expect(values, isNot(contains('invoiceUiObj')));
-        expect(
-          values,
-          isNot(contains('\${EnumUserAppRoutes.settings}/businessProfileView')),
-        );
-      },
-    );
+      expect(values, contains('VISIBLE TEXT'));
+      expect(values, isNot(contains('runtimeInternalKey')));
+      expect(values, isNot(contains('anotherInternalValue')));
+    });
 
     test(
-      'l10n-ignore-next-line only applies to the immediately following line',
-      () async {
-        final arbData = await extractFromSource(r'''
+        'l10n-ignore-next-line only applies to the immediately following line',
+        () async {
+      final arbData = await extractFromSource(r'''
 import 'package:flutter/material.dart';
 
 // l10n-ignore-next-line
-static const String ignoredValue = 'ignored_programmatic_value';
+final String ignoredValue = 'ignored_programmatic_value';
 
-static const String userFacingMessage = 'Reusable user-facing message';
+final String userFacingMessage = 'Reusable user-facing message';
 
 void buildExample() {
   const Text('VISIBLE TEXT');
 }
 ''');
 
-        final values = extractedValues(arbData);
+      final values = extractedValues(arbData);
 
-        expect(values, isNot(contains('ignored_programmatic_value')));
-        expect(values, contains('Reusable user-facing message'));
-        expect(values, contains('VISIBLE TEXT'));
-      },
-    );
+      expect(values, isNot(contains('ignored_programmatic_value')));
+      expect(values, contains('Reusable user-facing message'));
+      expect(values, contains('VISIBLE TEXT'));
+    });
 
-    test(
-      'does not globally ignore static or const String declarations',
-      () async {
-        final arbData = await extractFromSource(r'''
+    test('ignores static const String declarations by default', () async {
+      final arbData = await extractFromSource(r'''
 import 'package:flutter/material.dart';
 
+static const String internalFieldKey = 'advancePaymentAmount';
+static const String internalPropertyName = 'calendarEventUIObj';
+static const String internalStorageKey = 'sourceLineItemId';
+
+void buildExample() {
+  const Text('VISIBLE TEXT');
+}
+''');
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('VISIBLE TEXT'));
+      expect(values, isNot(contains('advancePaymentAmount')));
+      expect(values, isNot(contains('calendarEventUIObj')));
+      expect(values, isNot(contains('sourceLineItemId')));
+    });
+
+    test(
+        'l10n-include-next-line includes a user-facing static const String',
+        () async {
+      final arbData = await extractFromSource(r'''
+import 'package:flutter/material.dart';
+
+// l10n-include-next-line
 static const String reusableErrorMessage = 'Something went wrong';
-static String reusableSuccessMessage = 'Invoice created successfully';
+
+// l10n-include-next-line
+static const String reusableSuccessMessage = 'Invoice created successfully';
+
+static const String internalFieldKey = 'invoiceUIObj';
 
 void buildExample() {
   const Text('VISIBLE TEXT');
 }
 ''');
 
-        final values = extractedValues(arbData);
+      final values = extractedValues(arbData);
 
-        expect(values, contains('Something went wrong'));
-        expect(values, contains('Invoice created successfully'));
-        expect(values, contains('VISIBLE TEXT'));
-      },
-    );
+      expect(values, contains('Something went wrong'));
+      expect(values, contains('Invoice created successfully'));
+      expect(values, contains('VISIBLE TEXT'));
+      expect(values, isNot(contains('invoiceUIObj')));
+    });
+
+    test(
+        'l10n-include-next-line only applies to the immediately following static const String',
+        () async {
+      final arbData = await extractFromSource(r'''
+import 'package:flutter/material.dart';
+
+// l10n-include-next-line
+static const String includedMessage = 'Included reusable message';
+
+static const String ignoredMessage = 'Ignored static constant';
+
+void buildExample() {
+  const Text('VISIBLE TEXT');
+}
+''');
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('Included reusable message'));
+      expect(values, contains('VISIBLE TEXT'));
+      expect(values, isNot(contains('Ignored static constant')));
+    });
+
+    test(
+        'l10n-ignore-next-line still overrides a static const String declaration',
+        () async {
+      final arbData = await extractFromSource(r'''
+import 'package:flutter/material.dart';
+
+// l10n-ignore-next-line
+static const String explicitlyIgnored = 'Explicitly ignored';
+
+void buildExample() {
+  const Text('VISIBLE TEXT');
+}
+''');
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('VISIBLE TEXT'));
+      expect(values, isNot(contains('Explicitly ignored')));
+    });
+
+    test('ignores static String values in *_routes.dart files', () async {
+      final arbData = await extractFromSource(
+        r'''
+import 'package:flutter/material.dart';
+
+class AppRoutes {
+  static String dashboardPath = '/dashboard';
+  static String invoicePath = '/invoices/create';
+  static const String customerPath = '/customers';
+  static final String settingsPath = '/settings/profile';
+}
+
+void buildExample() {
+  const Text('VISIBLE ROUTE SCREEN TEXT');
+}
+''',
+        fileName: 'app_routes.dart',
+      );
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('VISIBLE ROUTE SCREEN TEXT'));
+      expect(values, isNot(contains('/dashboard')));
+      expect(values, isNot(contains('/invoices/create')));
+      expect(values, isNot(contains('/customers')));
+      expect(values, isNot(contains('/settings/profile')));
+    });
+
+    test('route-file rule matches case-insensitively', () async {
+      final arbData = await extractFromSource(
+        r'''
+class AppRoutes {
+  static String route = '/internal-route';
+}
+
+final String userFacingMessage = 'Visible non-static message';
+''',
+        fileName: 'APP_ROUTES.DART',
+      );
+
+      final values = extractedValues(arbData);
+
+      expect(values, isNot(contains('/internal-route')));
+      expect(values, contains('Visible non-static message'));
+    });
+
+    test(
+        'non-route files do not globally ignore ordinary static String declarations',
+        () async {
+      final arbData = await extractFromSource(r'''
+import 'package:flutter/material.dart';
+
+static String reusableRuntimeMessage = 'Runtime reusable message';
+
+void buildExample() {
+  const Text('VISIBLE TEXT');
+}
+''');
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('Runtime reusable message'));
+      expect(values, contains('VISIBLE TEXT'));
+    });
+
+    test(
+        'route-file rule does not ignore non-static user-facing String values',
+        () async {
+      final arbData = await extractFromSource(
+        r'''
+class AppRoutes {
+  static String route = '/internal-route';
+}
+
+final String userFacingMessage = 'Visible route screen message';
+''',
+        fileName: 'billing_routes.dart',
+      );
+
+      final values = extractedValues(arbData);
+
+      expect(values, isNot(contains('/internal-route')));
+      expect(values, contains('Visible route screen message'));
+    });
 
     test('still ignores import export and part URIs', () async {
       final arbData = await extractFromSource(r'''
@@ -433,16 +579,17 @@ void buildExample(dynamic data, int count) {
       expect(values, contains('{count} selected'));
     });
 
-    test(
-      'handles mixed ignored and localizable strings in one source file',
-      () async {
-        final arbData = await extractFromSource(r'''
+    test('handles mixed custom rules in one ordinary Dart file', () async {
+      final arbData = await extractFromSource(r'''
 import 'package:flutter/material.dart';
 
-// l10n-ignore-next-line
 static const String internalFieldKey = 'advancePaymentAmount';
 
+// l10n-include-next-line
 static const String reusableMessage = 'Payment is required';
+
+// l10n-ignore-next-line
+final String runtimeInternalKey = 'runtime_internal_key';
 
 // const Text('OLD COMMENTED TEXT');
 
@@ -486,32 +633,64 @@ class InvoiceActionButton extends StatelessWidget {
 }
 ''');
 
-        final values = extractedValues(arbData);
+      final values = extractedValues(arbData);
 
-        // User-facing values must remain.
-        expect(values, contains('Payment is required'));
-        expect(values, contains('CREATE INVOICE'));
-        expect(values, contains('NEEDS ATTENTION'));
-        expect(values, contains('{i} invoices'));
+      expect(values, contains('Payment is required'));
+      expect(values, contains('CREATE INVOICE'));
+      expect(values, contains('NEEDS ATTENTION'));
+      expect(values, contains('{i} invoices'));
 
-        // Programmatic/commented values must be excluded.
-        final ignored = [
-          'advancePaymentAmount',
-          'OLD COMMENTED TEXT',
-          'OLD BLOCK COMMENT TEXT',
-          'dashboard_card_attention',
-          'invoice_section_create_button',
-          'dashboard_carousel_dot_\$i',
-        ];
+      final ignored = [
+        'advancePaymentAmount',
+        'runtime_internal_key',
+        'OLD COMMENTED TEXT',
+        'OLD BLOCK COMMENT TEXT',
+        'dashboard_card_attention',
+        'invoice_section_create_button',
+        'dashboard_carousel_dot_\$i',
+      ];
 
-        for (final value in ignored) {
-          expect(
-            values,
-            isNot(contains(value)),
-            reason: 'Expected "$value" to be ignored.',
-          );
-        }
-      },
-    );
+      for (final value in ignored) {
+        expect(
+          values,
+          isNot(contains(value)),
+          reason: 'Expected "$value" to be ignored.',
+        );
+      }
+    });
+
+    test('handles route-file and explicit rules together', () async {
+      final arbData = await extractFromSource(
+        r'''
+import 'package:flutter/material.dart';
+
+class InvoiceRoutes {
+  static String listPath = '/invoices';
+  static const String createPath = '/invoices/create';
+  static final String editPath = '/invoices/edit';
+
+  // l10n-ignore-next-line
+  final String internalInstanceValue = 'internal_instance_value';
+
+  final String visibleMessage = 'Invoice routes loaded';
+}
+
+void buildExample() {
+  const Text('INVOICE SCREEN');
+}
+''',
+        fileName: 'invoice_routes.dart',
+      );
+
+      final values = extractedValues(arbData);
+
+      expect(values, contains('Invoice routes loaded'));
+      expect(values, contains('INVOICE SCREEN'));
+
+      expect(values, isNot(contains('/invoices')));
+      expect(values, isNot(contains('/invoices/create')));
+      expect(values, isNot(contains('/invoices/edit')));
+      expect(values, isNot(contains('internal_instance_value')));
+    });
   });
 }
